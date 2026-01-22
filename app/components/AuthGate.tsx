@@ -1,50 +1,74 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { onAuthStateChanged, User } from "firebase/auth";
-import { useRouter } from "next/navigation";
+import { ReactNode, useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { auth, db } from "@/lib/firebase";
-import { doc, getDoc, updateDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 
-export default function AuthGate({ children }: { children: React.ReactNode }) {
+type Role = "pledge" | "active" | "admin";
+
+export default function AuthGate({ children }: { children: ReactNode }) {
   const router = useRouter();
-  const [user, setUser] = useState<User | null>(null);
+  const pathname = usePathname();
+
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (u) => {
-      setUser(u);
-      setLoading(false);
-
-      if (!u) {
-        router.replace("/login");
-        return;
-      }
-
-      // ✅ Admin bootstrap: if this user email matches, set isAdmin on their user doc
-      const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL;
-      const email = (u.email || "").trim();
-
-      if (adminEmail && email && email === adminEmail) {
-        const ref = doc(db, "users", u.uid);
-        const snap = await getDoc(ref);
-        const data = snap.data();
-
-        if (!data?.isAdmin) {
-          await updateDoc(ref, {
-            isAdmin: true,
-            role: "admin",
-            updatedAt: serverTimestamp(),
-          });
+    const unsub = auth.onAuthStateChanged(async (u) => {
+      try {
+        if (!u) {
+          router.replace("/login");
+          return;
         }
+
+        // Always allow login page if already authed? (optional)
+        // if (pathname === "/login") return;
+
+        const userSnap = await getDoc(doc(db, "users", u.uid));
+        const user = userSnap.exists() ? (userSnap.data() as any) : null;
+
+        const role: Role | null = (user?.role as Role | undefined) ?? null;
+        const roleLocked = !!user?.roleLocked;
+        const profileComplete = !!user?.profileComplete;
+        const isAdmin = !!user?.isAdmin;
+
+        const isAdminRoute = pathname?.startsWith("/admin");
+
+        // ✅ Admins can always access /admin even without profileComplete
+        if (isAdmin && isAdminRoute) {
+          setLoading(false);
+          return;
+        }
+
+        // If role isn't locked yet, send to /role
+        if (!roleLocked && pathname !== "/role") {
+          router.replace("/role");
+          return;
+        }
+
+        // If role is locked but profile not complete, send to /onboarding
+        // (Admins are allowed into /admin without profileComplete, but other pages still require it)
+        if (roleLocked && !profileComplete && pathname !== "/onboarding" && !isAdminRoute) {
+          router.replace("/onboarding");
+          return;
+        }
+
+        // If fully onboarded, allow
+        setLoading(false);
+      } catch (e) {
+        console.error("AuthGate error:", e);
+        // If something goes wrong, safest fallback is login
+        router.replace("/login");
+      } finally {
+        setLoading(false);
       }
     });
 
     return () => unsub();
-  }, [router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
 
-  if (loading) return <div className="p-8">Loading...</div>;
-  if (!user) return null;
+  if (loading) return <div className="p-8">Loading…</div>;
 
   return <>{children}</>;
 }

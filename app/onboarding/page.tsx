@@ -46,17 +46,51 @@ export default function OnboardingPage() {
   const [saving, setSaving] = useState(false);
   const [savingPickup, setSavingPickup] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [infoMsg, setInfoMsg] = useState<string | null>(null);
 
-  const isActive = role === "active" || role === "admin";
+  const isActive = role === "active"; // IMPORTANT: admin is NOT treated as active here
+  const isAdminUser = !!isAdmin;
+
   const canQuickFinishActive = isActive && wantsLittle === false;
 
-  // Your preferred “+” wording
-  const personalityOptions = ["Introvert", "Extrovert", "Ambivert", "Depends on the day"];
-  const humorOptions = ["Dry + sarcastic", "Chaotic + silly", "Wholesome", "Dark humor (tasteful)", "I match the room"];
-  const hangoutOptions = ["Chill nights in", "Going out + social", "Adventures + spontaneous", "Gym + active stuff", "A mix"];
-  const groupRoleOptions = ["Leader + organizer", "Supportive + chill", "Life of the party", "Quiet observer", "Connector + brings people together"];
-  const valuesOptions = ["Loyalty", "Ambition", "Kindness", "Humor", "Accountability", "Balance"];
+  const personalityOptions = [
+    "Introvert",
+    "Extrovert",
+    "Ambivert",
+    "Depends on the day",
+  ];
+
+  const humorOptions = [
+    "Dry + sarcastic",
+    "Chaotic + silly",
+    "Wholesome",
+    "Dark humor (tasteful)",
+    "I match the room",
+  ];
+
+  const hangoutOptions = [
+    "Chill nights in",
+    "Going out + social",
+    "Adventures + spontaneous",
+    "Gym + active stuff",
+    "A mix",
+  ];
+
+  const groupRoleOptions = [
+    "Leader + organizer",
+    "Supportive + chill",
+    "Life of the party",
+    "Quiet observer",
+    "Connector (brings people together)",
+  ];
+
+  const valuesOptions = [
+    "Loyalty",
+    "Ambition",
+    "Kindness",
+    "Humor",
+    "Accountability",
+    "Balance",
+  ];
 
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(async (u) => {
@@ -87,10 +121,11 @@ export default function OnboardingPage() {
         if (typeof userData?.wantsLittle === "boolean") setWantsLittle(!!userData.wantsLittle);
         if (typeof userData?.maxLittles === "number") setMaxLittles(Number(userData.maxLittles));
 
-        // If profile exists, prefill displayName + questions + pickup
+        // Load existing profile (if any)
         const profSnap = await getDoc(doc(db, "profiles", u.uid));
         if (profSnap.exists()) {
           const p = profSnap.data() as any;
+
           setDisplayName(p.displayName ?? "");
           setQ1Personality(p.q1_personality ?? "");
           setQ2Humor(p.q2_humor ?? "");
@@ -98,6 +133,7 @@ export default function OnboardingPage() {
           setQ4GroupRole(p.q4_groupRole ?? "");
           setQ5Values(p.q5_values ?? "");
           setQ6About(p.q6_about ?? "");
+
           if (typeof p.wantsLittle === "boolean") setWantsLittle(!!p.wantsLittle);
           if (typeof p.maxLittles === "number") setMaxLittles(Number(p.maxLittles));
         }
@@ -123,13 +159,24 @@ export default function OnboardingPage() {
     return () => URL.revokeObjectURL(url);
   }, [photoFile]);
 
+  // If active flips from "No" to "Yes", reset N/A so they can answer
+  useEffect(() => {
+    if (!isActive) return;
+    if (wantsLittle === true) {
+      if (q1Personality === "N/A") setQ1Personality("");
+      if (q2Humor === "N/A") setQ2Humor("");
+      if (q3Hangout === "N/A") setQ3Hangout("");
+      if (q4GroupRole === "N/A") setQ4GroupRole("");
+      if (q5Values === "N/A") setQ5Values("");
+      if (q6About === "N/A") setQ6About("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantsLittle, isActive]);
+
   const allQuestionsFilled = useMemo(() => {
     if (!displayName.trim()) return false;
 
-    // Require photo on initial create only
-    if (!photoFile) return false;
-
-    // If active said "No", allow saving without questions
+    // If active chose "No", allow finishing without Q1-6
     if (canQuickFinishActive) return true;
 
     return (
@@ -142,7 +189,6 @@ export default function OnboardingPage() {
     );
   }, [
     displayName,
-    photoFile,
     canQuickFinishActive,
     q1Personality,
     q2Humor,
@@ -152,27 +198,23 @@ export default function OnboardingPage() {
     q6About,
   ]);
 
-  async function handleSavePickupSettings() {
+  async function savePickupSettings() {
     setErrorMsg(null);
-    setInfoMsg(null);
 
     const u = auth.currentUser;
     if (!u) {
       setErrorMsg("Not signed in.");
       return;
     }
-    if (!currentCycleId) {
-      setErrorMsg("Admin hasn’t set a current cycle yet (settings/global.currentCycleId).");
-      return;
-    }
+
     if (!isActive) {
-      setErrorMsg("Pickup settings are only for actives/admin.");
+      setErrorMsg("Pickup settings are only for actives.");
       return;
     }
 
     setSavingPickup(true);
     try {
-      // Update users doc (your rules allow this after profileComplete)
+      // Save to users doc (always allowed by your rules)
       await setDoc(
         doc(db, "users", u.uid),
         {
@@ -183,7 +225,7 @@ export default function OnboardingPage() {
         { merge: true }
       );
 
-      // Update profile doc if it exists (your rules allow these fields)
+      // Also save to profile if it exists (so browse filtering can use it)
       await setDoc(
         doc(db, "profiles", u.uid),
         {
@@ -193,8 +235,6 @@ export default function OnboardingPage() {
         },
         { merge: true }
       );
-
-      setInfoMsg("Pickup settings saved ✅");
     } catch (e: any) {
       console.error(e);
       setErrorMsg(e?.message ?? "Failed to save pickup settings.");
@@ -203,9 +243,8 @@ export default function OnboardingPage() {
     }
   }
 
-  async function handleSaveProfileFirstTime() {
+  async function handleSaveOrUpdateProfile() {
     setErrorMsg(null);
-    setInfoMsg(null);
 
     const u = auth.currentUser;
     if (!u) {
@@ -223,31 +262,52 @@ export default function OnboardingPage() {
       return;
     }
 
-    // Admins don’t *need* a profile. They can skip.
-    // (But they still can create one if they want.)
-    // If admin wants to skip, they can just go browse/admin pages.
-    if (role === "admin") {
-      // Allow creating admin profile too, so we continue normally if they hit save.
+    // ✅ OPTION A: Admins do NOT create profiles
+    if (isAdminUser) {
+      router.push("/admin");
+      return;
+    }
+
+    if (!displayName.trim()) {
+      setErrorMsg("Please enter your name.");
+      return;
+    }
+
+    // Pledges cannot update once complete
+    if (profileComplete && role === "pledge") {
+      setErrorMsg("Your profile is locked.");
+      return;
+    }
+
+    // For NEW profile creation: require photo upload
+    const needsNewPhoto = !profileComplete && !photoFile;
+    if (needsNewPhoto) {
+      setErrorMsg("Please upload a profile photo.");
+      return;
     }
 
     if (!allQuestionsFilled) {
-      setErrorMsg("Please complete the form (name, photo, and required questions).");
+      setErrorMsg("Please complete the form.");
       return;
     }
 
     setSaving(true);
+
     try {
-      // Upload photo: profilePhotos/{cycleId}/{uid}
-      const photoRef = ref(storage, `profilePhotos/${currentCycleId}/${u.uid}`);
-      await uploadBytes(photoRef, photoFile!);
-      const photoURL = await getDownloadURL(photoRef);
+      let photoURLToSave: string | null = null;
+
+      // Upload photo ONLY if they selected a new one
+      if (photoFile) {
+        const photoRef = ref(storage, `profilePhotos/${currentCycleId}/${u.uid}`);
+        await uploadBytes(photoRef, photoFile);
+        photoURLToSave = await getDownloadURL(photoRef);
+      }
 
       const profilePayload: any = {
         uid: u.uid,
-        role,
+        role, // pledge | active
         cycleId: currentCycleId,
         displayName: displayName.trim(),
-        photoURL,
 
         wantsLittle: isActive ? wantsLittle : null,
         maxLittles: isActive ? maxLittles : null,
@@ -259,26 +319,39 @@ export default function OnboardingPage() {
         q5_values: canQuickFinishActive ? "N/A" : q5Values,
         q6_about: canQuickFinishActive ? "N/A" : q6About.trim(),
 
-        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
 
-      // Create profile
-      await setDoc(doc(db, "profiles", u.uid), profilePayload, { merge: false });
+      if (photoURLToSave) profilePayload.photoURL = photoURLToSave;
 
-      // Mark user complete
-      await setDoc(
-        doc(db, "users", u.uid),
-        {
-          profileComplete: true,
-          wantsLittle: isActive ? wantsLittle : null,
-          maxLittles: isActive ? maxLittles : null,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
+      // If first save: set createdAt, and merge false
+      if (!profileComplete) {
+        profilePayload.createdAt = serverTimestamp();
+        await setDoc(doc(db, "profiles", u.uid), profilePayload, { merge: false });
 
-      setProfileComplete(true);
+        // Mark user complete
+        await setDoc(
+          doc(db, "users", u.uid),
+          {
+            profileComplete: true,
+            updatedAt: serverTimestamp(),
+            wantsLittle: isActive ? wantsLittle : null,
+            maxLittles: isActive ? maxLittles : null,
+          },
+          { merge: true }
+        );
+
+        setProfileComplete(true);
+      } else {
+        // Update (actives only)
+        await setDoc(doc(db, "profiles", u.uid), profilePayload, { merge: true });
+        await setDoc(
+          doc(db, "users", u.uid),
+          { updatedAt: serverTimestamp() },
+          { merge: true }
+        );
+      }
+
       router.push("/browse");
     } catch (e: any) {
       console.error(e);
@@ -304,16 +377,16 @@ export default function OnboardingPage() {
             <div>
               <h1 className="text-3xl font-bold">Create your profile</h1>
               <p className="mt-2 text-gray-600">
-                Upload a photo and answer a few quick questions.
+                Answer a few quick questions and upload a photo. After saving, you can browse profiles.
               </p>
               <p className="mt-1 text-sm text-gray-500">
                 Current cycle:{" "}
                 <span className="font-medium">
-                  {currentCycleId ?? "Not set (admin must set it in /admin)"}
+                  {currentCycleId ?? "Not set (admin must set settings/global.currentCycleId)"}
                 </span>
               </p>
             </div>
-            {isAdmin && (
+            {isAdminUser && (
               <div className="rounded-xl border px-3 py-2 text-xs text-gray-700">
                 Admin
               </div>
@@ -332,189 +405,206 @@ export default function OnboardingPage() {
             </div>
             {!roleLocked && (
               <div className="mt-2 text-sm text-gray-600">
-                Go to <span className="font-mono">/role</span> and choose pledge/active.
+                Your role isn’t locked yet. Go to <span className="font-mono">/role</span> and choose pledge/active.
               </div>
             )}
           </div>
 
-          {/* Admin shortcut if they don't want a profile */}
-          {role === "admin" && !profileComplete && (
+          {/* ✅ OPTION A: Admins skip profiles */}
+          {isAdminUser ? (
             <div className="mt-6 rounded-xl border p-4">
-              <div className="font-semibold">Admin shortcut</div>
-              <p className="mt-1 text-sm text-gray-600">
-                As admin, you don’t need a profile to manage the cycle and release preferences.
-              </p>
-              <div className="mt-3 flex gap-3">
-                <button
-                  onClick={() => router.push("/admin")}
-                  className="flex-1 rounded-lg bg-black text-white py-2 font-medium"
-                >
-                  Go to Admin
-                </button>
-                <button
-                  onClick={() => router.push("/browse")}
-                  className="flex-1 rounded-lg border py-2 font-medium"
-                >
-                  Browse
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Pickup settings ALWAYS editable for actives/admin (even after profileComplete) */}
-          {isActive && (
-            <div className="mt-6 rounded-xl border p-4">
-              <div className="text-lg font-semibold">Pickup settings (actives)</div>
-
-              <div className="mt-3">
-                <label className="text-sm font-medium text-gray-700">
-                  Do you want to take a little this cycle?
-                </label>
-                <div className="mt-2 flex gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setWantsLittle(true)}
-                    className={`rounded-lg border px-3 py-2 text-sm font-medium ${
-                      wantsLittle ? "bg-black text-white" : ""
-                    }`}
-                  >
-                    Yes
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setWantsLittle(false)}
-                    className={`rounded-lg border px-3 py-2 text-sm font-medium ${
-                      !wantsLittle ? "bg-black text-white" : ""
-                    }`}
-                  >
-                    No
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-4">
-                <label className="text-sm font-medium text-gray-700">
-                  Max littles you’re open to (1 or 2)
-                </label>
-                <select
-                  value={maxLittles}
-                  onChange={(e) => setMaxLittles(Number(e.target.value))}
-                  className="mt-1 w-full rounded-lg border px-3 py-2"
-                  disabled={!wantsLittle}
-                >
-                  <option value={1}>1</option>
-                  <option value={2}>2</option>
-                </select>
-              </div>
-
-              <button
-                onClick={handleSavePickupSettings}
-                disabled={savingPickup || !currentCycleId}
-                className="mt-4 w-full rounded-lg border py-2 font-semibold disabled:opacity-50"
-              >
-                {savingPickup ? "Saving…" : "Save pickup settings"}
-              </button>
-
-              <p className="mt-2 text-xs text-gray-500">
-                You can change these anytime. (Your profile answers remain as-is unless you rebuild a profile per cycle.)
-              </p>
-            </div>
-          )}
-
-          {/* If profile already saved */}
-          {profileComplete ? (
-            <div className="mt-6 rounded-xl border p-4">
-              <div className="text-lg font-semibold">Profile saved ✅</div>
+              <div className="text-lg font-semibold">Admin account ✅</div>
               <p className="mt-1 text-gray-600">
-                You can browse profiles now.
+                Admins don’t need profiles. Use the dashboard to manage cycles, releases, and results.
               </p>
               <button
-                onClick={() => router.push("/browse")}
+                onClick={() => router.push("/admin")}
                 className="mt-4 w-full rounded-lg bg-black text-white py-2 font-medium"
               >
-                Go to Browse
+                Go to Admin Dashboard
               </button>
             </div>
           ) : (
             <>
-              {/* Name + photo */}
-              <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="text-sm font-medium text-gray-700">Display name</label>
-                  <input
-                    value={displayName}
-                    onChange={(e) => setDisplayName(e.target.value)}
-                    className="mt-1 w-full rounded-lg border px-3 py-2"
-                    placeholder="e.g., Jordan"
-                  />
-                </div>
+              {/* Pickup settings (actives only) */}
+              {isActive && roleLocked && (
+                <div className="mt-6 rounded-xl border p-4">
+                  <div className="text-lg font-semibold">Pickup settings (actives)</div>
 
-                <div>
-                  <label className="text-sm font-medium text-gray-700">Profile photo</label>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => setPhotoFile(e.target.files?.[0] ?? null)}
-                    className="mt-1 w-full"
-                  />
-                  {photoPreview && (
-                    <img
-                      src={photoPreview}
-                      alt="preview"
-                      className="mt-2 h-32 w-32 rounded-xl object-cover border"
-                    />
-                  )}
-                </div>
-              </div>
-
-              {/* Questions (skip if active not picking up) */}
-              {!canQuickFinishActive && (
-                <div className="mt-6 space-y-4">
-                  <SelectQuestion label="1) Personality" value={q1Personality} setValue={setQ1Personality} options={personalityOptions} />
-                  <SelectQuestion label="2) Sense of humor" value={q2Humor} setValue={setQ2Humor} options={humorOptions} />
-                  <SelectQuestion label="3) Ideal hangout" value={q3Hangout} setValue={setQ3Hangout} options={hangoutOptions} />
-                  <SelectQuestion label="4) In a group, you tend to be…" value={q4GroupRole} setValue={setQ4GroupRole} options={groupRoleOptions} />
-                  <SelectQuestion label="5) Most important value" value={q5Values} setValue={setQ5Values} options={valuesOptions} />
-
-                  <div>
+                  <div className="mt-3">
                     <label className="text-sm font-medium text-gray-700">
-                      6) 1–2 sentences: something you want people to know about you
+                      Do you want to take a little this cycle?
                     </label>
-                    <textarea
-                      value={q6About}
-                      onChange={(e) => setQ6About(e.target.value)}
-                      rows={3}
-                      className="mt-1 w-full rounded-lg border px-3 py-2"
-                      placeholder="Keep it short and real."
-                    />
+                    <div className="mt-2 flex gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setWantsLittle(true)}
+                        className={`rounded-lg border px-3 py-2 text-sm font-medium ${
+                          wantsLittle ? "bg-black text-white" : ""
+                        }`}
+                      >
+                        Yes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setWantsLittle(false)}
+                        className={`rounded-lg border px-3 py-2 text-sm font-medium ${
+                          !wantsLittle ? "bg-black text-white" : ""
+                        }`}
+                      >
+                        No
+                      </button>
+                    </div>
                   </div>
+
+                  <div className="mt-4">
+                    <label className="text-sm font-medium text-gray-700">
+                      Max littles you’re open to (1 or 2)
+                    </label>
+                    <select
+                      value={maxLittles}
+                      onChange={(e) => setMaxLittles(Number(e.target.value))}
+                      className="mt-1 w-full rounded-lg border px-3 py-2"
+                      disabled={!wantsLittle}
+                    >
+                      <option value={1}>1</option>
+                      <option value={2}>2</option>
+                    </select>
+                  </div>
+
+                  <button
+                    onClick={savePickupSettings}
+                    disabled={savingPickup}
+                    className="mt-4 w-full rounded-lg border py-2 font-medium disabled:opacity-50"
+                  >
+                    {savingPickup ? "Saving…" : "Save pickup settings"}
+                  </button>
+
+                  <p className="mt-2 text-xs text-gray-500">
+                    You can change these anytime. (Your profile answers remain as-is unless you rebuild a profile per cycle.)
+                  </p>
                 </div>
               )}
 
-              {/* Messages */}
-              {errorMsg && (
-                <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-                  {errorMsg}
+              {/* If pledge and already saved, lock editing */}
+              {profileComplete && role === "pledge" ? (
+                <div className="mt-6 rounded-xl border p-4">
+                  <div className="text-lg font-semibold">Profile saved ✅</div>
+                  <p className="mt-1 text-gray-600">
+                    Your profile is locked. You can browse profiles.
+                  </p>
+                  <button
+                    onClick={() => router.push("/browse")}
+                    className="mt-4 w-full rounded-lg bg-black text-white py-2 font-medium"
+                  >
+                    Go to Browse
+                  </button>
                 </div>
-              )}
-              {infoMsg && (
-                <div className="mt-6 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">
-                  {infoMsg}
-                </div>
-              )}
+              ) : (
+                <>
+                  {/* Name + photo */}
+                  <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-sm font-medium text-gray-700">Display name</label>
+                      <input
+                        value={displayName}
+                        onChange={(e) => setDisplayName(e.target.value)}
+                        className="mt-1 w-full rounded-lg border px-3 py-2"
+                        placeholder="e.g., Jordan"
+                      />
+                    </div>
 
-              {/* Save */}
-              <button
-                onClick={handleSaveProfileFirstTime}
-                disabled={saving || !roleLocked || !currentCycleId || !allQuestionsFilled}
-                className="mt-6 w-full rounded-lg bg-black text-white py-3 font-semibold disabled:opacity-50"
-              >
-                {saving ? "Saving…" : "Save Profile"}
-              </button>
+                    <div>
+                      <label className="text-sm font-medium text-gray-700">Profile photo</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => setPhotoFile(e.target.files?.[0] ?? null)}
+                        className="mt-1 w-full"
+                      />
+                      {photoPreview && (
+                        <img
+                          src={photoPreview}
+                          alt="preview"
+                          className="mt-2 h-32 w-32 rounded-xl object-cover border"
+                        />
+                      )}
+                      {profileComplete && (
+                        <p className="mt-2 text-xs text-gray-500">
+                          Upload a new photo only if you want to replace the existing one.
+                        </p>
+                      )}
+                    </div>
+                  </div>
 
-              <p className="mt-3 text-xs text-gray-500">
-                After saving, you’ll be able to browse profiles. Only admins can see matching scores.
-              </p>
+                  {/* Questions (skip if active not picking up) */}
+                  {!canQuickFinishActive && (
+                    <div className="mt-6 space-y-4">
+                      <SelectQuestion
+                        label="1) Personality"
+                        value={q1Personality}
+                        setValue={setQ1Personality}
+                        options={personalityOptions}
+                      />
+                      <SelectQuestion
+                        label="2) Sense of humor"
+                        value={q2Humor}
+                        setValue={setQ2Humor}
+                        options={humorOptions}
+                      />
+                      <SelectQuestion
+                        label="3) Ideal hangout"
+                        value={q3Hangout}
+                        setValue={setQ3Hangout}
+                        options={hangoutOptions}
+                      />
+                      <SelectQuestion
+                        label="4) In a group, you tend to be…"
+                        value={q4GroupRole}
+                        setValue={setQ4GroupRole}
+                        options={groupRoleOptions}
+                      />
+                      <SelectQuestion
+                        label="5) Most important value"
+                        value={q5Values}
+                        setValue={setQ5Values}
+                        options={valuesOptions}
+                      />
+
+                      <div>
+                        <label className="text-sm font-medium text-gray-700">
+                          6) 1–2 sentences: something you want people to know about you
+                        </label>
+                        <textarea
+                          value={q6About}
+                          onChange={(e) => setQ6About(e.target.value)}
+                          rows={3}
+                          className="mt-1 w-full rounded-lg border px-3 py-2"
+                          placeholder="Keep it short and real."
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {errorMsg && (
+                    <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                      {errorMsg}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={handleSaveOrUpdateProfile}
+                    disabled={saving || !roleLocked || !currentCycleId || (!allQuestionsFilled && !canQuickFinishActive)}
+                    className="mt-6 w-full rounded-lg bg-black text-white py-3 font-semibold disabled:opacity-50"
+                  >
+                    {saving ? "Saving…" : profileComplete ? "Update Profile" : "Save Profile"}
+                  </button>
+
+                  <p className="mt-3 text-xs text-gray-500">
+                    After saving, you’ll be able to browse profiles. Only admins can see matching scores.
+                  </p>
+                </>
+              )}
             </>
           )}
         </div>

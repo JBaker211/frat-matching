@@ -1,127 +1,134 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { collection, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import {
+  collection,
+  getDocs,
+  doc,
+  getDoc,
+} from "firebase/firestore";
 
 type Profile = {
   uid: string;
-  name: string;
-  role: "pledge" | "active";
-  wantsLittle?: boolean;
+  role: "pledge" | "active" | "admin";
+  displayName: string;
 };
 
 type Preference = {
-  rankedUids: string[];
+  uid: string;
+  preferredUids?: string[];
 };
 
-type MatchSuggestion = {
+type Match = {
   pledge: Profile;
   active: Profile;
   score: number;
 };
 
 export default function MatchmakerPage() {
-  const [matches, setMatches] = useState<MatchSuggestion[]>([]);
+  const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    generateMatches();
+    runMatchmaker();
   }, []);
 
-  async function generateMatches() {
+  async function runMatchmaker() {
     setLoading(true);
 
-    const cycleId = "current"; // MUST match admin-selected cycle
-
-    // ------------------------
-    // LOAD PROFILES
-    // ------------------------
-    const profileSnap = await getDocs(
-      collection(db, "cycles", cycleId, "profiles")
-    );
-
-    const profiles: Profile[] = profileSnap.docs.map((doc) => ({
-      uid: doc.id,
-      ...(doc.data() as Omit<Profile, "uid">),
-    }));
-
-    const pledges = profiles.filter((p) => p.role === "pledge");
-    const actives = profiles.filter(
-      (p) => p.role === "active" && p.wantsLittle !== false
-    );
-
-    // ------------------------
-    // LOAD PREFERENCES
-    // ------------------------
-    const prefSnap = await getDocs(
-      collection(db, "cycles", cycleId, "preferences")
-    );
-
-    const preferences: Record<string, Preference> = {};
-    prefSnap.forEach((doc) => {
-      preferences[doc.id] = doc.data() as Preference;
-    });
-
-    // ------------------------
-    // GENERATE MATCH SCORES
-    // ------------------------
-    const suggestions: MatchSuggestion[] = [];
-
-    for (const pledge of pledges) {
-      for (const active of actives) {
-        let score = 0;
-
-        const pledgePrefs = preferences[pledge.uid]?.rankedUids ?? [];
-        const activePrefs = preferences[active.uid]?.rankedUids ?? [];
-
-        // Mutual preference boosts
-        if (pledgePrefs.includes(active.uid)) {
-          score += 10 - pledgePrefs.indexOf(active.uid);
-        }
-
-        if (activePrefs.includes(pledge.uid)) {
-          score += 10 - activePrefs.indexOf(pledge.uid);
-        }
-
-        suggestions.push({
-          pledge,
-          active,
-          score,
-        });
+    try {
+      // 1️⃣ Get current cycle
+      const settingsSnap = await getDoc(doc(db, "settings", "global"));
+      const cycleId = settingsSnap.data()?.currentCycleId;
+      if (!cycleId) {
+        console.error("No cycleId set");
+        setLoading(false);
+        return;
       }
+
+      // 2️⃣ Load ALL profiles (this is where your data actually is)
+      const profilesSnap = await getDocs(collection(db, "profiles"));
+      const profiles: Profile[] = profilesSnap.docs.map((d) => d.data() as Profile);
+
+      const pledges = profiles.filter((p) => p.role === "pledge");
+      const actives = profiles.filter(
+        (p) => p.role === "active" || p.role === "admin"
+      );
+
+      // 3️⃣ Load preferences for this cycle
+      const prefsSnap = await getDocs(
+        collection(db, "cycles", cycleId, "preferences")
+      );
+
+      const preferences: Record<string, Preference> = {};
+      prefsSnap.forEach((doc) => {
+        preferences[doc.id] = doc.data() as Preference;
+      });
+
+      // 4️⃣ Compute matches
+      const computedMatches: Match[] = [];
+
+      for (const pledge of pledges) {
+        for (const active of actives) {
+          let score = 0;
+
+          const pledgePrefs = preferences[pledge.uid];
+          const activePrefs = preferences[active.uid];
+
+          if (pledgePrefs?.preferredUids?.includes(active.uid)) {
+            score += 1;
+          }
+
+          if (activePrefs?.preferredUids?.includes(pledge.uid)) {
+            score += 1;
+          }
+
+          computedMatches.push({
+            pledge,
+            active,
+            score,
+          });
+        }
+      }
+
+      // 5️⃣ Sort by score
+      computedMatches.sort((a, b) => b.score - a.score);
+
+      setMatches(computedMatches);
+    } catch (err) {
+      console.error("Matchmaker error:", err);
+    } finally {
+      setLoading(false);
     }
-
-    // Sort best matches first
-    suggestions.sort((a, b) => b.score - a.score);
-
-    setMatches(suggestions);
-    setLoading(false);
   }
 
-  if (loading) {
-    return <p className="p-6">Loading match suggestions…</p>;
+  if (loading) return <div className="p-6">Loading matches…</div>;
+
+  if (matches.length === 0) {
+    return <div className="p-6">No matches found.</div>;
   }
 
   return (
-    <div className="p-6">
-      <h1 className="text-2xl font-bold mb-4">Matchmaker Suggestions</h1>
+    <div className="p-6 space-y-4">
+      <h1 className="text-2xl font-bold">Matchmaker</h1>
 
-      {matches.length === 0 && (
-        <p>No matches found (this should not happen anymore).</p>
-      )}
-
-      <ul className="space-y-3">
-        {matches.map((m, i) => (
-          <li key={i} className="border rounded p-3">
-            <strong>{m.pledge.name}</strong> ↔{" "}
-            <strong>{m.active.name}</strong>
-            <div className="text-sm text-gray-500">
-              Score: {m.score}
-            </div>
-          </li>
-        ))}
-      </ul>
+      {matches.map((m, i) => (
+        <div
+          key={i}
+          className="border rounded-lg p-4 flex justify-between"
+        >
+          <div>
+            <strong>Pledge:</strong> {m.pledge.displayName}
+          </div>
+          <div>
+            <strong>Active:</strong> {m.active.displayName}
+          </div>
+          <div>
+            <strong>Score:</strong> {m.score}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

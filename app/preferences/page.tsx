@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useMemo, useState } from "react";
 import AuthGate from "@/app/components/AuthGate";
 import { auth, db } from "@/lib/firebase";
@@ -10,7 +8,6 @@ import {
   getDocs,
   query,
   where,
-  orderBy,
   serverTimestamp,
   setDoc,
 } from "firebase/firestore";
@@ -44,11 +41,12 @@ export default function PreferencesPage() {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Prevent duplicate selections by filtering available options per dropdown
-  const selected = useMemo(() => [rank1, rank2, rank3].filter(Boolean), [rank1, rank2, rank3]);
+  const selected = useMemo(
+    () => [rank1, rank2, rank3].filter(Boolean),
+    [rank1, rank2, rank3]
+  );
 
   const rankings = useMemo(() => {
-    // Preserve order, remove blanks, remove duplicates
     const raw = [rank1, rank2, rank3].filter(Boolean);
     const unique: string[] = [];
     for (const uid of raw) {
@@ -68,7 +66,7 @@ export default function PreferencesPage() {
         setErrorMsg(null);
         setStatusMsg(null);
 
-        // 1) Load current cycleId
+        // 1) Current cycle
         const settingsSnap = await getDoc(doc(db, "settings", "global"));
         const currentCycleId = settingsSnap.exists()
           ? (settingsSnap.data()?.currentCycleId as string | undefined)
@@ -83,7 +81,7 @@ export default function PreferencesPage() {
 
         setCycleId(currentCycleId);
 
-        // 2) Load my cycle profile to determine role
+        // 2) My profile (to determine role)
         const myProfileRef = doc(db, "cycles", currentCycleId, "profiles", u.uid);
         const myProfileSnap = await getDoc(myProfileRef);
 
@@ -97,20 +95,26 @@ export default function PreferencesPage() {
         const role = myProfile.role;
         setMyRole(role);
 
-        // 3) Determine target role (who you should rank)
-        // Pledges rank actives; Actives/Admin rank pledges
+        // 3) Who you should rank
+        // pledges rank actives; actives/admin rank pledges
         const targetRole: Role = role === "pledge" ? "active" : "pledge";
 
-        // 4) Fetch target profiles for this cycle
+        // 4) Fetch target profiles
+        // IMPORTANT: no orderBy() -> avoids composite index requirement
         const profilesRef = collection(db, "cycles", currentCycleId, "profiles");
-        const qRef = query(profilesRef, where("role", "==", targetRole), orderBy("displayName"));
+        const qRef = query(profilesRef, where("role", "==", targetRole));
 
         const snap = await getDocs(qRef);
         const list = snap.docs.map((d) => d.data() as CycleProfile);
 
+        // Sort client-side by displayName (no Firestore index needed)
+        list.sort((a, b) =>
+          (a.displayName || "").localeCompare(b.displayName || "", undefined, { sensitivity: "base" })
+        );
+
         setOptions(list);
 
-        // 5) If they've already submitted preferences, prefill (optional but helpful)
+        // 5) Prefill if already submitted (if it exists)
         const prefRef = doc(db, "cycles", currentCycleId, "preferences", u.uid);
         const prefSnap = await getDoc(prefRef);
         if (prefSnap.exists()) {
@@ -125,7 +129,17 @@ export default function PreferencesPage() {
         setLoading(false);
       } catch (e: any) {
         console.error(e);
-        setErrorMsg(e?.message ?? "Failed to load preferences.");
+
+        // If this ever happens again, show the exact Firestore hint
+        const msg = String(e?.message ?? "");
+        if (msg.includes("requires an index")) {
+          setErrorMsg(
+            "Firestore says this query needs an index. I removed orderBy to avoid indexes — if you still see this, tell me and I’ll adjust the query again."
+          );
+        } else {
+          setErrorMsg(e?.message ?? "Failed to load preferences.");
+        }
+
         setLoading(false);
       }
     });
@@ -136,6 +150,11 @@ export default function PreferencesPage() {
   function nameFor(uid: string) {
     const p = options.find((x) => x.uid === uid);
     return p ? p.displayName : uid;
+  }
+
+  function filteredOptions(exceptUid: string) {
+    const used = new Set(selected.filter((x) => x !== exceptUid));
+    return options.filter((p) => !used.has(p.uid));
   }
 
   async function handleSubmit() {
@@ -156,7 +175,6 @@ export default function PreferencesPage() {
       return;
     }
 
-    // Allow fewer than 3, but require at least 1
     if (rankings.length === 0) {
       setErrorMsg("Please choose at least 1 preference.");
       return;
@@ -166,19 +184,17 @@ export default function PreferencesPage() {
     try {
       const prefRef = doc(db, "cycles", cycleId, "preferences", u.uid);
 
-      // Keep Firestore shape stable: rankings is UID array.
       await setDoc(
         prefRef,
         {
           uid: u.uid,
           role: myRole,
           cycleId,
-          rankings, // <-- UIDs (matchmaker stays happy)
-          // Optional: store readable names too (doesn't break anything)
-          rankingNames: rankings.map((id) => nameFor(id)),
+          rankings, // <-- stays as UIDs (matchmaker won’t break)
+          rankingNames: rankings.map((id) => nameFor(id)), // optional convenience
           submittedAt: serverTimestamp(),
         },
-        { merge: true } // allows resubmission if your rules permit it
+        { merge: true }
       );
 
       setStatusMsg("Saved ✅");
@@ -189,12 +205,6 @@ export default function PreferencesPage() {
     } finally {
       setSaving(false);
     }
-  }
-
-  // options filtered so you can't pick the same person twice
-  function filteredOptions(exceptUid: string) {
-    const used = new Set(selected.filter((x) => x !== exceptUid));
-    return options.filter((p) => !used.has(p.uid));
   }
 
   if (loading) {
@@ -228,29 +238,15 @@ export default function PreferencesPage() {
             <div className="mt-6 rounded-xl border p-4">
               <div className="font-semibold">No one to choose yet</div>
               <p className="mt-1 text-sm text-gray-600">
-                Once the other group completes onboarding, they’ll show up here.
+                If you’re a pledge, this means no actives have profiles in this cycle yet (or their role field isn’t “active”).
+                If you’re an active/admin, this means no pledges have profiles in this cycle yet (or their role field isn’t “pledge”).
               </p>
             </div>
           ) : (
             <div className="mt-6 space-y-4">
-              <RankSelect
-                label="1st choice"
-                value={rank1}
-                onChange={setRank1}
-                options={filteredOptions(rank1)}
-              />
-              <RankSelect
-                label="2nd choice"
-                value={rank2}
-                onChange={setRank2}
-                options={filteredOptions(rank2)}
-              />
-              <RankSelect
-                label="3rd choice"
-                value={rank3}
-                onChange={setRank3}
-                options={filteredOptions(rank3)}
-              />
+              <RankSelect label="1st choice" value={rank1} onChange={setRank1} options={filteredOptions(rank1)} />
+              <RankSelect label="2nd choice" value={rank2} onChange={setRank2} options={filteredOptions(rank2)} />
+              <RankSelect label="3rd choice" value={rank3} onChange={setRank3} options={filteredOptions(rank3)} />
             </div>
           )}
 
@@ -275,7 +271,7 @@ export default function PreferencesPage() {
           </button>
 
           <p className="mt-3 text-xs text-gray-500">
-            Your selections are saved as internal IDs, but you only see names here.
+            You only see names here, but preferences are saved internally as IDs so matching still works.
           </p>
         </div>
       </main>
@@ -297,11 +293,7 @@ function RankSelect({
   return (
     <div>
       <label className="text-sm font-medium text-gray-700">{label}</label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-lg border px-3 py-2"
-      >
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2">
         <option value="">(No selection)</option>
         {options.map((p) => (
           <option value={p.uid} key={p.uid}>

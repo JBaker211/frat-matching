@@ -1,27 +1,28 @@
+"use client";
+
 import { useEffect, useMemo, useState } from "react";
 import AuthGate from "@/app/components/AuthGate";
 import { auth, db } from "@/lib/firebase";
+
 import {
-  collection,
   doc,
   getDoc,
-  getDocs,
-  query,
-  where,
-  serverTimestamp,
   setDoc,
+  collection,
+  getDocs,
+  serverTimestamp,
 } from "firebase/firestore";
+
 import { onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/navigation";
 
+
 type Role = "pledge" | "active" | "admin";
 
-type CycleProfile = {
+type Profile = {
   uid: string;
-  role: Role;
-  cycleId: string;
   displayName: string;
-  photoURL?: string;
+  role: Role;
 };
 
 export default function PreferencesPage() {
@@ -31,276 +32,256 @@ export default function PreferencesPage() {
   const [saving, setSaving] = useState(false);
 
   const [cycleId, setCycleId] = useState<string | null>(null);
+
   const [myRole, setMyRole] = useState<Role | null>(null);
 
-  const [options, setOptions] = useState<CycleProfile[]>([]);
-  const [rank1, setRank1] = useState<string>("");
-  const [rank2, setRank2] = useState<string>("");
-  const [rank3, setRank3] = useState<string>("");
+  const [profiles, setProfiles] = useState<Profile[]>([]);
 
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [choices, setChoices] = useState<string[]>([]);
 
-  const selected = useMemo(
-    () => [rank1, rank2, rank3].filter(Boolean),
-    [rank1, rank2, rank3]
-  );
+  const [error, setError] = useState<string | null>(null);
 
-  const rankings = useMemo(() => {
-    const raw = [rank1, rank2, rank3].filter(Boolean);
-    const unique: string[] = [];
-    for (const uid of raw) {
-      if (!unique.includes(uid)) unique.push(uid);
-    }
-    return unique;
-  }, [rank1, rank2, rank3]);
+  const [saved, setSaved] = useState(false);
 
+
+  // Load everything
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (u) => {
-      if (!u) {
-        setLoading(false);
+
+    const unsub = onAuthStateChanged(auth, async (user) => {
+
+      if (!user) {
+        router.push("/login");
         return;
       }
 
       try {
-        setErrorMsg(null);
-        setStatusMsg(null);
 
-        // 1) Current cycle
+        // Load current cycle
         const settingsSnap = await getDoc(doc(db, "settings", "global"));
-        const currentCycleId = settingsSnap.exists()
-          ? (settingsSnap.data()?.currentCycleId as string | undefined)
-          : undefined;
 
-        if (!currentCycleId) {
-          setCycleId(null);
-          setErrorMsg("Admin has not set the current cycle yet.");
+        if (!settingsSnap.exists()) {
+          setError("No cycle configured.");
           setLoading(false);
           return;
         }
 
-        setCycleId(currentCycleId);
+        const cycle = settingsSnap.data().currentCycleId;
 
-        // 2) My profile (to determine role)
-        const myProfileRef = doc(db, "cycles", currentCycleId, "profiles", u.uid);
-        const myProfileSnap = await getDoc(myProfileRef);
-
-        if (!myProfileSnap.exists()) {
-          setErrorMsg("You must complete onboarding before submitting preferences.");
+        if (!cycle) {
+          setError("No current cycle set.");
           setLoading(false);
           return;
         }
 
-        const myProfile = myProfileSnap.data() as CycleProfile;
-        const role = myProfile.role;
-        setMyRole(role);
+        setCycleId(cycle);
 
-        // 3) Who you should rank
-        // pledges rank actives; actives/admin rank pledges
-        const targetRole: Role = role === "pledge" ? "active" : "pledge";
 
-        // 4) Fetch target profiles
-        // IMPORTANT: no orderBy() -> avoids composite index requirement
-        const profilesRef = collection(db, "cycles", currentCycleId, "profiles");
-        const qRef = query(profilesRef, where("role", "==", targetRole));
-
-        const snap = await getDocs(qRef);
-        const list = snap.docs.map((d) => d.data() as CycleProfile);
-
-        // Sort client-side by displayName (no Firestore index needed)
-        list.sort((a, b) =>
-          (a.displayName || "").localeCompare(b.displayName || "", undefined, { sensitivity: "base" })
+        // Load my profile
+        const myProfileSnap = await getDoc(
+          doc(db, "cycles", cycle, "profiles", user.uid)
         );
 
-        setOptions(list);
-
-        // 5) Prefill if already submitted (if it exists)
-        const prefRef = doc(db, "cycles", currentCycleId, "preferences", u.uid);
-        const prefSnap = await getDoc(prefRef);
-        if (prefSnap.exists()) {
-          const data = prefSnap.data() as any;
-          const existing: string[] = Array.isArray(data.rankings) ? data.rankings : [];
-          setRank1(existing[0] ?? "");
-          setRank2(existing[1] ?? "");
-          setRank3(existing[2] ?? "");
-          setStatusMsg("Loaded your saved preferences.");
+        if (!myProfileSnap.exists()) {
+          setError("Complete onboarding first.");
+          setLoading(false);
+          return;
         }
+
+        const myProfile = myProfileSnap.data() as Profile;
+
+        setMyRole(myProfile.role);
+
+
+        // Load all profiles
+        const profilesSnap = await getDocs(
+          collection(db, "cycles", cycle, "profiles")
+        );
+
+        const allProfiles: Profile[] = profilesSnap.docs.map(doc => doc.data() as Profile);
+
+        setProfiles(allProfiles);
+
+
+        // Load existing preferences if exist
+        const prefSnap = await getDoc(
+          doc(db, "cycles", cycle, "preferences", user.uid)
+        );
+
+        if (prefSnap.exists()) {
+
+          const data = prefSnap.data();
+
+          setChoices(data.choices || []);
+          setSaved(true);
+        }
+
 
         setLoading(false);
-      } catch (e: any) {
-        console.error(e);
 
-        // If this ever happens again, show the exact Firestore hint
-        const msg = String(e?.message ?? "");
-        if (msg.includes("requires an index")) {
-          setErrorMsg(
-            "Firestore says this query needs an index. I removed orderBy to avoid indexes — if you still see this, tell me and I’ll adjust the query again."
-          );
-        } else {
-          setErrorMsg(e?.message ?? "Failed to load preferences.");
-        }
+      } catch (err: any) {
 
+        console.error(err);
+        setError(err.message);
         setLoading(false);
       }
     });
 
     return () => unsub();
-  }, []);
 
-  function nameFor(uid: string) {
-    const p = options.find((x) => x.uid === uid);
-    return p ? p.displayName : uid;
+  }, [router]);
+
+
+  // Filter opposite role
+  const availableProfiles = useMemo(() => {
+
+    if (!myRole) return [];
+
+    if (myRole === "pledge") {
+      return profiles.filter(p => p.role === "active" || p.role === "admin");
+    }
+
+    if (myRole === "active" || myRole === "admin") {
+      return profiles.filter(p => p.role === "pledge");
+    }
+
+    return [];
+
+  }, [profiles, myRole]);
+
+
+  function toggleChoice(uid: string) {
+
+    setChoices(prev => {
+
+      if (prev.includes(uid)) {
+        return prev.filter(x => x !== uid);
+      }
+
+      if (prev.length >= 3) {
+        return prev;
+      }
+
+      return [...prev, uid];
+
+    });
+
   }
 
-  function filteredOptions(exceptUid: string) {
-    const used = new Set(selected.filter((x) => x !== exceptUid));
-    return options.filter((p) => !used.has(p.uid));
-  }
 
-  async function handleSubmit() {
-    setErrorMsg(null);
-    setStatusMsg(null);
+  async function savePreferences() {
 
-    const u = auth.currentUser;
-    if (!u) {
-      setErrorMsg("Not signed in.");
-      return;
-    }
-    if (!cycleId) {
-      setErrorMsg("No current cycle set.");
-      return;
-    }
-    if (!myRole) {
-      setErrorMsg("Could not determine your role.");
-      return;
-    }
+    if (!cycleId) return;
 
-    if (rankings.length === 0) {
-      setErrorMsg("Please choose at least 1 preference.");
+    const user = auth.currentUser;
+
+    if (!user) return;
+
+    if (choices.length === 0) {
+      setError("Pick at least 1.");
       return;
     }
 
     setSaving(true);
+
     try {
-      const prefRef = doc(db, "cycles", cycleId, "preferences", u.uid);
 
       await setDoc(
-        prefRef,
+        doc(db, "cycles", cycleId, "preferences", user.uid),
         {
-          uid: u.uid,
+          uid: user.uid,
+          choices,
           role: myRole,
           cycleId,
-          rankings, // <-- stays as UIDs (matchmaker won’t break)
-          rankingNames: rankings.map((id) => nameFor(id)), // optional convenience
-          submittedAt: serverTimestamp(),
-        },
-        { merge: true }
+          createdAt: serverTimestamp(),
+        }
       );
 
-      setStatusMsg("Saved ✅");
-      router.push("/results");
-    } catch (e: any) {
-      console.error(e);
-      setErrorMsg(e?.message ?? "Failed to save preferences.");
-    } finally {
-      setSaving(false);
+      setSaved(true);
+
+    } catch (err: any) {
+
+      console.error(err);
+      setError(err.message);
+
     }
+
+    setSaving(false);
+
   }
+
 
   if (loading) {
     return (
       <AuthGate>
-        <div className="p-8">Loading preferences…</div>
+        <main className="p-10 text-center">
+          Loading profiles...
+        </main>
       </AuthGate>
     );
   }
 
+
   return (
     <AuthGate>
+
       <main className="min-h-screen flex items-center justify-center p-6">
-        <div className="w-full max-w-2xl rounded-2xl border p-8 shadow-sm">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h1 className="text-3xl font-bold">Preferences</h1>
-              <p className="mt-2 text-gray-600">
-                Pick up to <span className="font-semibold">3</span> people in order (1st → 3rd).
-              </p>
-              <p className="mt-1 text-sm text-gray-500">
-                Current cycle: <span className="font-medium">{cycleId ?? "Not set"}</span>
-              </p>
-            </div>
-            <div className="rounded-xl border px-3 py-2 text-xs text-gray-700">
-              Role: <span className="font-semibold">{myRole ?? "?"}</span>
-            </div>
-          </div>
 
-          {options.length === 0 ? (
-            <div className="mt-6 rounded-xl border p-4">
-              <div className="font-semibold">No one to choose yet</div>
-              <p className="mt-1 text-sm text-gray-600">
-                If you’re a pledge, this means no actives have profiles in this cycle yet (or their role field isn’t “active”).
-                If you’re an active/admin, this means no pledges have profiles in this cycle yet (or their role field isn’t “pledge”).
-              </p>
+        <div className="w-full max-w-xl border rounded-xl p-6">
+
+          <h1 className="text-2xl font-bold mb-4">
+            Preferences
+          </h1>
+
+          <p className="mb-4 text-gray-600">
+            Pick up to 3 people.
+          </p>
+
+
+          {availableProfiles.length === 0 && (
+            <div>No one available.</div>
+          )}
+
+
+          {availableProfiles.map(profile => (
+
+            <div
+              key={profile.uid}
+              className="flex items-center justify-between border p-3 rounded mb-2"
+            >
+
+              <div>{profile.displayName}</div>
+
+              <input
+                type="checkbox"
+                checked={choices.includes(profile.uid)}
+                onChange={() => toggleChoice(profile.uid)}
+              />
+
             </div>
-          ) : (
-            <div className="mt-6 space-y-4">
-              <RankSelect label="1st choice" value={rank1} onChange={setRank1} options={filteredOptions(rank1)} />
-              <RankSelect label="2nd choice" value={rank2} onChange={setRank2} options={filteredOptions(rank2)} />
-              <RankSelect label="3rd choice" value={rank3} onChange={setRank3} options={filteredOptions(rank3)} />
+
+          ))}
+
+
+          {error && (
+            <div className="text-red-600 mt-4">
+              {error}
             </div>
           )}
 
-          {statusMsg && (
-            <div className="mt-6 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">
-              {statusMsg}
-            </div>
-          )}
-
-          {errorMsg && (
-            <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-              {errorMsg}
-            </div>
-          )}
 
           <button
-            onClick={handleSubmit}
-            disabled={saving || options.length === 0}
-            className="mt-6 w-full rounded-lg bg-black text-white py-3 font-semibold disabled:opacity-50"
+            onClick={savePreferences}
+            disabled={saving || saved}
+            className="mt-6 w-full bg-black text-white py-2 rounded"
           >
-            {saving ? "Saving…" : "Submit Preferences"}
+            {saved ? "Saved" : saving ? "Saving..." : "Submit Preferences"}
           </button>
 
-          <p className="mt-3 text-xs text-gray-500">
-            You only see names here, but preferences are saved internally as IDs so matching still works.
-          </p>
-        </div>
-      </main>
-    </AuthGate>
-  );
-}
 
-function RankSelect({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: CycleProfile[];
-}) {
-  return (
-    <div>
-      <label className="text-sm font-medium text-gray-700">{label}</label>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2">
-        <option value="">(No selection)</option>
-        {options.map((p) => (
-          <option value={p.uid} key={p.uid}>
-            {p.displayName}
-          </option>
-        ))}
-      </select>
-    </div>
+        </div>
+
+      </main>
+
+    </AuthGate>
   );
 }

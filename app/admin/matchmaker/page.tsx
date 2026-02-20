@@ -38,70 +38,84 @@ export default function MatchmakerPage() {
     setLoading(true);
 
     try {
-      // 1️⃣ Get current cycle
+      console.log("🟡 Matchmaker starting…");
+
+      // 1️⃣ Get cycle
       const settingsSnap = await getDoc(doc(db, "settings", "global"));
       const cycleId = settingsSnap.data()?.currentCycleId;
+      console.log("🟢 cycleId:", cycleId);
+
       if (!cycleId) {
-        console.error("No cycleId set");
-        setLoading(false);
+        console.error("❌ No cycleId set");
         return;
       }
 
-      // 2️⃣ Load ALL profiles (this is where your data actually is)
+      // 2️⃣ Load profiles
       const profilesSnap = await getDocs(collection(db, "profiles"));
-      const profiles: Profile[] = profilesSnap.docs.map((d) => d.data() as Profile);
+      console.log("🟢 profiles count:", profilesSnap.size);
+
+      const profiles = profilesSnap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      }));
+
+      console.log("🟢 profiles sample:", profiles.slice(0, 3));
 
       const pledges = profiles.filter((p) => p.role === "pledge");
       const actives = profiles.filter(
         (p) => p.role === "active" || p.role === "admin"
       );
 
-      // 3️⃣ Load preferences for this cycle
+      console.log("🟢 pledges:", pledges.length);
+      console.log("🟢 actives:", actives.length);
+
+      // 3️⃣ Load preferences
       const prefsSnap = await getDocs(
         collection(db, "cycles", cycleId, "preferences")
       );
 
-      const preferences: Record<string, Preference> = {};
-      prefsSnap.forEach((doc) => {
-        preferences[doc.id] = doc.data() as Preference;
+      console.log("🟢 preferences count:", prefsSnap.size);
+
+      const preferences: Record<string, any> = {};
+      prefsSnap.forEach((d) => {
+        preferences[d.id] = d.data();
       });
 
-      // 4️⃣ Compute matches
-      const computedMatches: Match[] = [];
+      console.log("🟢 preferences sample:", Object.entries(preferences).slice(0, 3));
+
+      // 4️⃣ Match
+      const computedMatches = [];
 
       for (const pledge of pledges) {
         for (const active of actives) {
           let score = 0;
 
-          const pledgePrefs = preferences[pledge.uid];
-          const activePrefs = preferences[active.uid];
-
-          if (pledgePrefs?.preferredUids?.includes(active.uid)) {
+          if (
+            preferences[pledge.uid]?.preferredUids?.includes(active.uid)
+          ) {
             score += 1;
           }
 
-          if (activePrefs?.preferredUids?.includes(pledge.uid)) {
+          if (
+            preferences[active.uid]?.preferredUids?.includes(pledge.uid)
+          ) {
             score += 1;
           }
 
-          computedMatches.push({
-            pledge,
-            active,
-            score,
-          });
+          computedMatches.push({ pledge, active, score });
         }
       }
 
-      // 5️⃣ Sort by score
-      computedMatches.sort((a, b) => b.score - a.score);
+      console.log("🟢 computed matches:", computedMatches.length);
 
       setMatches(computedMatches);
     } catch (err) {
-      console.error("Matchmaker error:", err);
+      console.error("❌ Matchmaker error:", err);
     } finally {
       setLoading(false);
     }
   }
+
 
   if (loading) return <div className="p-6">Loading matches…</div>;
 

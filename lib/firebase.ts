@@ -1,4 +1,5 @@
-import { initializeApp, getApps } from "firebase/app";
+// firebase.ts
+import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
@@ -12,10 +13,11 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID!,
 };
 
-const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
+// ✅ Prevent re-initialization (VERY important for Next.js)
+export const app =
+  getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
+// ✅ Named exports used everywhere else
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const storage = getStorage(app);
-
-export {}; // keep this line

@@ -1,98 +1,128 @@
-
 "use client";
 
 import { useEffect, useState } from "react";
-import { collection, doc, getDocs, setDoc } from "firebase/firestore";
-import { db, auth } from "@/lib/firebase";
-
-type Profile = {
-  uid: string;
-  name: string;
-  role: "pledge" | "active";
-};
+import { auth, db } from "../../../lib/firebase";
+import {
+  doc,
+  getDoc,
+  setDoc,
+  serverTimestamp,
+} from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
+import { useRouter } from "next/navigation";
 
 export default function PreferencesPage() {
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [ranked, setRanked] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
+  const router = useRouter();
 
-  const user = auth.currentUser;
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [cycleId, setCycleId] = useState<string | null>(null);
+
+  const [rankings, setRankings] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    loadProfiles();
-  }, []);
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setLoading(false);
+        return;
+      }
 
-  async function loadProfiles() {
-    if (!user) return;
+      try {
+        // Load current cycle
+        const settingsSnap = await getDoc(doc(db, "settings", "global"));
+        const cid = settingsSnap.data()?.currentCycleId;
+        if (!cid) {
+          setError("No active cycle set by admin.");
+          setLoading(false);
+          return;
+        }
+        setCycleId(cid);
 
-    const cycleId = "current";
+        // Check if already submitted
+        const prefRef = doc(db, "cycles", cid, "preferences", user.uid);
+        const prefSnap = await getDoc(prefRef);
+        if (prefSnap.exists()) {
+          router.push("/browse");
+          return;
+        }
 
-    const snap = await getDocs(
-      collection(db, "cycles", cycleId, "profiles")
-    );
+        setLoading(false);
+      } catch (e: any) {
+        setError(e.message);
+        setLoading(false);
+      }
+    });
 
-    const allProfiles = snap.docs.map((doc) => ({
-      uid: doc.id,
-      ...(doc.data() as Omit<Profile, "uid">),
-    }));
+    return () => unsub();
+  }, [router]);
 
-    const me = allProfiles.find((p) => p.uid === user.uid);
-    if (!me) return;
+  async function handleSubmit() {
+    if (!cycleId) return;
+    if (rankings.length === 0) {
+      setError("Please rank at least one person.");
+      return;
+    }
 
-    const oppositeRole =
-      me.role === "pledge" ? "active" : "pledge";
+    setSaving(true);
+    setError(null);
 
-    setProfiles(allProfiles.filter((p) => p.role === oppositeRole));
-    setLoading(false);
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error("Not signed in");
+
+      await setDoc(
+        doc(db, "cycles", cycleId, "preferences", user.uid),
+        {
+          uid: user.uid,
+          rankings,
+          submittedAt: serverTimestamp(),
+        }
+      );
+
+      router.push("/browse");
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
   }
 
-  async function savePreferences() {
-    if (!user) return;
-
-    const cycleId = "current";
-
-    await setDoc(
-      doc(db, "cycles", cycleId, "preferences", user.uid),
-      { rankedUids: ranked },
-      { merge: true }
-    );
-
-    alert("Preferences saved!");
-  }
-
-  if (loading) return <p className="p-6">Loading profiles…</p>;
+  if (loading) return <div className="p-6">Loading preferences…</div>;
 
   return (
-    <div className="p-6">
-      <h1 className="text-xl font-bold mb-4">Rank Your Preferences</h1>
+    <main className="max-w-xl mx-auto p-6">
+      <h1 className="text-3xl font-bold">Preferences</h1>
+      <p className="text-gray-600 mt-2">
+        Rank people you’d prefer to be matched with.
+      </p>
 
-      <ul className="space-y-2">
-        {profiles.map((p) => (
-          <li key={p.uid}>
-            <label>
-              <input
-                type="checkbox"
-                checked={ranked.includes(p.uid)}
-                onChange={() =>
-                  setRanked((prev) =>
-                    prev.includes(p.uid)
-                      ? prev.filter((id) => id !== p.uid)
-                      : [...prev, p.uid]
-                  )
-                }
-              />{" "}
-              {p.name}
-            </label>
-          </li>
-        ))}
-      </ul>
+      {/* TEMP INPUT (simple but works) */}
+      <textarea
+        className="mt-4 w-full border rounded p-2"
+        rows={6}
+        placeholder="Enter UIDs separated by commas"
+        onChange={(e) =>
+          setRankings(
+            e.target.value
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          )
+        }
+      />
+
+      {error && (
+        <div className="mt-4 text-red-600 text-sm">{error}</div>
+      )}
 
       <button
-        onClick={savePreferences}
-        className="mt-4 px-4 py-2 bg-black text-white rounded"
+        onClick={handleSubmit}
+        disabled={saving}
+        className="mt-6 w-full bg-black text-white py-3 rounded font-semibold"
       >
-        Save Preferences
+        {saving ? "Submitting…" : "Submit Preferences"}
       </button>
-    </div>
+    </main>
   );
 }
